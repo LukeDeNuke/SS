@@ -1,0 +1,4 @@
+pandas
+plotly
+streamlit>=1.37
+yfinance
