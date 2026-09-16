@@ -16,6 +16,7 @@ try:
     from alpaca.trading.requests import GetOrdersRequest, LimitOrderRequest, MarketOrderRequest
     from alpaca.trading.enums import QueryOrderStatus
     from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.enums import DataFeed
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 except ImportError:
@@ -27,6 +28,7 @@ except ImportError:
     GetOrdersRequest = None
     QueryOrderStatus = None
     StockHistoricalDataClient = None
+    DataFeed = None
     StockBarsRequest = None
     TimeFrame = None
     TimeFrameUnit = None
@@ -119,7 +121,7 @@ def load_alpaca_chart(symbol, period, interval):
     api_key = api_key or os.getenv("ALPACA_API_KEY")
     secret_key = secret_key or os.getenv("ALPACA_SECRET_KEY")
     if not api_key or not secret_key or StockHistoricalDataClient is None:
-        return pd.DataFrame()
+        return pd.DataFrame(), "Alpaca credentials or the Alpaca data SDK are unavailable."
 
     timeframe_map = {
         "1m": TimeFrame.Minute,
@@ -131,16 +133,20 @@ def load_alpaca_chart(symbol, period, interval):
     period_days = {"1d": 1, "5d": 5, "1mo": 30}[period]
     end = datetime.now().astimezone()
     start = end - pd.Timedelta(days=period_days)
-    client = StockHistoricalDataClient(api_key, secret_key)
-    request = StockBarsRequest(
-        symbol_or_symbols=symbol,
-        start=start.to_pydatetime(),
-        end=end.to_pydatetime(),
-        timeframe=timeframe_map[interval],
-    )
-    bars = client.get_stock_bars(request).df
+    try:
+        client = StockHistoricalDataClient(api_key, secret_key)
+        request = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            start=start,
+            end=end,
+            timeframe=timeframe_map[interval],
+            feed=DataFeed.IEX,
+        )
+        bars = client.get_stock_bars(request).df
+    except Exception as error:
+        return pd.DataFrame(), str(error)
     if bars.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), "Alpaca returned no bars for this symbol and timeframe."
     if isinstance(bars.index, pd.MultiIndex):
         bars = bars.droplevel("symbol")
     bars = bars.rename(columns={
@@ -149,7 +155,7 @@ def load_alpaca_chart(symbol, period, interval):
     })
     bars = bars.dropna(subset=["Open", "High", "Low", "Close"]).copy()
     bars["SMA 5"] = bars["Close"].rolling(5).mean()
-    return bars
+    return bars, None
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -594,14 +600,16 @@ def live_dashboard():
                     with st.container(border=True):
                         st.markdown(f"### {symbol}")
                         use_alpaca = chart_source == "Alpaca (stocks)" and symbol in TRADING_SYMBOLS
-                        bars = (
-                            load_alpaca_chart(symbol, chart_period, chart_interval)
-                            if use_alpaca
-                            else load_chart(symbol, chart_period, chart_interval)
-                        )
+                        alpaca_error = None
+                        if use_alpaca:
+                            bars, alpaca_error = load_alpaca_chart(symbol, chart_period, chart_interval)
+                        else:
+                            bars = load_chart(symbol, chart_period, chart_interval)
                         if bars.empty:
-                            source_name = "Alpaca" if use_alpaca else "Yahoo Finance"
-                            st.info(f"No bars are available for {symbol} from {source_name} right now.")
+                            if alpaca_error:
+                                st.warning(f"Alpaca chart unavailable for {symbol}: {alpaca_error}")
+                            else:
+                                st.info(f"No bars are available for {symbol} from Yahoo Finance right now.")
                         else:
                             st.plotly_chart(
                                 make_chart(bars, symbol, chart_type, dark_mode),
