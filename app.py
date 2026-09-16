@@ -18,6 +18,7 @@ try:
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.enums import DataFeed
     from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.requests import StockLatestQuoteRequest, StockLatestTradeRequest
     from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 except ImportError:
     TradingClient = None
@@ -30,6 +31,8 @@ except ImportError:
     StockHistoricalDataClient = None
     DataFeed = None
     StockBarsRequest = None
+    StockLatestQuoteRequest = None
+    StockLatestTradeRequest = None
     TimeFrame = None
     TimeFrameUnit = None
 
@@ -86,6 +89,10 @@ st.markdown(
                letter-spacing: .12em; text-transform: uppercase; }
     .subtitle { color: #d7e6ee; margin-top: -.7rem; }
     .chart-card { border: 1px solid var(--line); border-radius: 8px; padding: .4rem .6rem .15rem; }
+    .st-key-market-info-panel [data-testid="stMetricValue"] { font-size: 1rem; }
+    .st-key-market-info-panel [data-testid="stMetricLabel"] { font-size: .7rem; }
+    .st-key-market-info-panel [data-testid="stCaptionContainer"] { font-size: .68rem; }
+    .st-key-market-info-panel [data-testid="stDataFrame"] { font-size: .72rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -158,8 +165,8 @@ def load_alpaca_chart(symbol, period, interval):
     return bars, None
 
 
-@st.cache_data(ttl=30, show_spinner=False)
-def load_market_depth(symbol):
+@st.cache_data(ttl=5, show_spinner=False)
+def load_yahoo_market_depth(symbol):
     """Return Yahoo's latest top-of-book quote for one symbol."""
     info = yf.Ticker(symbol).info
     bid = info.get("bid")
@@ -167,6 +174,7 @@ def load_market_depth(symbol):
     if bid is None or ask is None:
         return None
     return {
+        "source": "Yahoo Finance",
         "symbol": symbol,
         "bid": float(bid),
         "bid_size": info.get("bidSize"),
@@ -175,6 +183,36 @@ def load_market_depth(symbol):
         "last": info.get("regularMarketPrice"),
         "volume": info.get("regularMarketVolume"),
     }
+
+
+def load_alpaca_market_depth(symbol):
+    api_key, secret_key = load_session_credentials()
+    api_key = api_key or os.getenv("ALPACA_API_KEY")
+    secret_key = secret_key or os.getenv("ALPACA_SECRET_KEY")
+    if not api_key or not secret_key or StockHistoricalDataClient is None:
+        return None, "Alpaca credentials or the Alpaca data SDK are unavailable."
+    try:
+        client = StockHistoricalDataClient(api_key, secret_key)
+        quote_request = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
+        trade_request = StockLatestTradeRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
+        quote = client.get_stock_latest_quote(quote_request).get(symbol)
+        trade = client.get_stock_latest_trade(trade_request).get(symbol)
+        if quote is None:
+            return None, "Alpaca returned no latest quote for this symbol."
+        return {
+            "source": "Alpaca",
+            "symbol": symbol,
+            "bid": float(quote.bid_price),
+            "bid_size": quote.bid_size,
+            "ask": float(quote.ask_price),
+            "ask_size": quote.ask_size,
+            "last": float(trade.price) if trade else None,
+            "last_size": trade.size if trade else None,
+            "quote_time": quote.timestamp,
+            "trade_time": trade.timestamp if trade else None,
+        }, None
+    except Exception as error:
+        return None, str(error)
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -563,7 +601,7 @@ with st.sidebar:
         if st.button("Refresh now", use_container_width=True):
             load_snapshot.clear()
             load_chart.clear()
-            load_market_depth.clear()
+            load_yahoo_market_depth.clear()
             st.rerun()
         st.caption(f"Updates run every {refresh_seconds}s. Yahoo Finance may still be delayed.")
 
@@ -626,35 +664,47 @@ def live_dashboard():
     main_column, right_column = st.columns([3.4, 1.2], gap="large")
 
     with right_column:
-        st.subheader("Market info")
-        with st.expander("Market depth", expanded=True):
-            st.caption("Top-of-book data. Yahoo Finance does not provide the full Level 2 order book.")
-            depth_symbol = st.selectbox("Depth symbol", CHART_SYMBOLS, label_visibility="collapsed")
-            try:
-                depth = load_market_depth(depth_symbol)
-            except Exception as error:
-                st.warning(f"Quote depth unavailable: {error}")
-                depth = None
+        with st.container(key="market-info-panel"):
+            st.subheader("Market info")
+            with st.expander("Market depth", expanded=True):
+                depth_symbol = st.selectbox("Depth symbol", CHART_SYMBOLS, label_visibility="collapsed")
+                depth_uses_alpaca = chart_source == "Alpaca (stocks)" and depth_symbol in TRADING_SYMBOLS
+                depth_error = None
+                try:
+                    if depth_uses_alpaca:
+                        depth, depth_error = load_alpaca_market_depth(depth_symbol)
+                    else:
+                        depth = load_yahoo_market_depth(depth_symbol)
+                except Exception as error:
+                    depth = None
+                    depth_error = str(error)
 
-            if depth is None:
-                st.info(f"No bid/ask quote is available for {depth_symbol} right now.")
-            else:
-                midpoint = (depth["bid"] + depth["ask"]) / 2
-                spread = depth["ask"] - depth["bid"]
-                quote_columns = st.columns(2)
-                quote_columns[0].metric("Bid", f"${depth['bid']:.2f}")
-                quote_columns[1].metric("Ask", f"${depth['ask']:.2f}")
-                st.dataframe(
-                    pd.DataFrame([
+                if depth is None:
+                    st.warning(f"{depth['source'] if depth else 'Market'} quote unavailable for {depth_symbol}: {depth_error or 'no quote returned'}")
+                else:
+                    midpoint = (depth["bid"] + depth["ask"]) / 2
+                    spread = depth["ask"] - depth["bid"]
+                    st.caption(f"Live source: {depth['source']}")
+                    quote_columns = st.columns(2)
+                    quote_columns[0].metric("Bid", f"${depth['bid']:.2f}")
+                    quote_columns[1].metric("Ask", f"${depth['ask']:.2f}")
+                    quote_rows = [
                         {"Quote": "Bid size", "Value": depth["bid_size"] or "--"},
                         {"Quote": "Ask size", "Value": depth["ask_size"] or "--"},
                         {"Quote": "Spread", "Value": f"${spread:.4f}"},
                         {"Quote": "Midpoint", "Value": f"${midpoint:.2f}"},
-                    ]),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=170,
-                )
+                    ]
+                    if depth.get("last") is not None:
+                        quote_rows.extend([
+                            {"Quote": "Last trade", "Value": f"${depth['last']:.2f}"},
+                            {"Quote": "Last size", "Value": depth.get("last_size", "--")},
+                        ])
+                    st.dataframe(
+                        pd.DataFrame(quote_rows),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=220 if depth.get("last") is not None else 170,
+                    )
 
         with st.expander("Company context", expanded=False):
             try:
