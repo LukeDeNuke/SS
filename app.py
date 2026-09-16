@@ -193,30 +193,43 @@ def load_alpaca_market_depth(symbol):
     secret_key = secret_key or os.getenv("ALPACA_SECRET_KEY")
     if not api_key or not secret_key or StockHistoricalDataClient is None:
         return None, "Alpaca credentials or the Alpaca data SDK are unavailable."
-    try:
-        client = StockHistoricalDataClient(api_key, secret_key)
-        quote_request = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
-        trade_request = StockLatestTradeRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
-        quote = client.get_stock_latest_quote(quote_request).get(symbol)
-        trade = client.get_stock_latest_trade(trade_request).get(symbol)
-        if quote is None:
-            return None, "Alpaca returned no latest quote for this symbol."
-        bid = float(quote.bid_price) if quote.bid_price is not None else None
-        ask = float(quote.ask_price) if quote.ask_price is not None else None
-        return {
-            "source": "Alpaca",
-            "symbol": symbol,
-            "bid": bid,
-            "bid_size": quote.bid_size,
-            "ask": ask,
-            "ask_size": quote.ask_size,
-            "last": float(trade.price) if trade else None,
-            "last_size": trade.size if trade else None,
-            "quote_time": quote.timestamp,
-            "trade_time": trade.timestamp if trade else None,
-        }, None
-    except Exception as error:
-        return None, str(error)
+    client = StockHistoricalDataClient(api_key, secret_key)
+    errors = []
+    candidates = []
+    for feed in (DataFeed.SIP, DataFeed.IEX):
+        try:
+            quote_request = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=feed)
+            trade_request = StockLatestTradeRequest(symbol_or_symbols=symbol, feed=feed)
+            quote = client.get_stock_latest_quote(quote_request).get(symbol)
+            trade = client.get_stock_latest_trade(trade_request).get(symbol)
+            if quote is not None:
+                candidates.append((feed, quote, trade))
+                if quote.ask_size not in (None, 0):
+                    break
+        except Exception as error:
+            errors.append(f"{feed.value}: {error}")
+
+    if not candidates:
+        return None, "Alpaca returned no latest quote. " + "; ".join(errors)
+
+    feed, quote, trade = next(
+        (candidate for candidate in reversed(candidates) if candidate[1].ask_size not in (None, 0)),
+        candidates[0],
+    )
+    bid = float(quote.bid_price) if quote.bid_price is not None else None
+    ask = float(quote.ask_price) if quote.ask_price is not None else None
+    return {
+        "source": f"Alpaca {feed.value.upper()}",
+        "symbol": symbol,
+        "bid": bid,
+        "bid_size": quote.bid_size,
+        "ask": ask,
+        "ask_size": quote.ask_size,
+        "last": float(trade.price) if trade else None,
+        "last_size": trade.size if trade else None,
+        "quote_time": quote.timestamp,
+        "trade_time": trade.timestamp if trade else None,
+    }, None
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -745,6 +758,19 @@ def live_dashboard():
                     depth = None
                     depth_error = str(error)
 
+                alpaca_fallback_used = False
+                if (
+                    depth_uses_alpaca
+                    and depth is not None
+                    and (depth.get("ask") in (None, 0) or depth.get("ask_size") in (None, 0))
+                ):
+                    yahoo_depth = load_yahoo_market_depth(depth_symbol)
+                    if yahoo_depth is not None and yahoo_depth.get("ask") not in (None, 0):
+                        yahoo_depth = dict(yahoo_depth)
+                        yahoo_depth["source"] = "Yahoo Finance fallback"
+                        depth = yahoo_depth
+                        alpaca_fallback_used = True
+
                 if depth is None:
                     st.warning(f"{depth['source'] if depth else 'Market'} quote unavailable for {depth_symbol}: {depth_error or 'no quote returned'}")
                 else:
@@ -758,20 +784,23 @@ def live_dashboard():
                         if depth["bid"] is not None and depth["ask"] is not None
                         else None
                     )
-                    st.caption(f"Live source: {depth['source']}")
+                    st.caption(
+                        f"Live source: {depth['source']}"
+                        + (" · Alpaca ask unavailable" if alpaca_fallback_used else "")
+                    )
                     quote_columns = st.columns(2)
                     quote_columns[0].metric("Bid", f"${depth['bid']:.2f}" if depth["bid"] is not None else "--")
                     quote_columns[1].metric("Ask", f"${depth['ask']:.2f}" if depth["ask"] is not None else "--")
                     quote_rows = [
-                        {"Quote": "Bid size", "Value": depth["bid_size"] or "--"},
-                        {"Quote": "Ask size", "Value": depth["ask_size"] or "--"},
-                        {"Quote": "Spread", "Value": f"${spread:.4f}" if spread is not None else "--"},
-                        {"Quote": "Midpoint", "Value": f"${midpoint:.2f}" if midpoint is not None else "--"},
+                        {"Quote": "Bid size", "Value": str(depth["bid_size"] or "--")},
+                        {"Quote": "Ask size", "Value": str(depth["ask_size"] or "--")},
+                        {"Quote": "Spread", "Value": str(f"${spread:.4f}" if spread is not None else "--")},
+                        {"Quote": "Midpoint", "Value": str(f"${midpoint:.2f}" if midpoint is not None else "--")},
                     ]
                     if depth.get("last") is not None:
                         quote_rows.extend([
-                            {"Quote": "Last trade", "Value": f"${depth['last']:.2f}"},
-                            {"Quote": "Last size", "Value": depth.get("last_size") or "--"},
+                            {"Quote": "Last trade", "Value": str(f"${depth['last']:.2f}")},
+                            {"Quote": "Last size", "Value": str(depth.get("last_size") or "--")},
                         ])
                     if depth.get("quote_time") is not None:
                         quote_rows.append({"Quote": "Quote time", "Value": str(depth["quote_time"])})
