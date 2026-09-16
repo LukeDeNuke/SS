@@ -43,6 +43,13 @@ FILTERS = {
     "price_max": 10_000,
     "min_abs_change_pct": 1.0,   # only show stocks moving at least this much today
     "min_vol_ratio": 0.5,        # today's volume-so-far vs its recent daily average
+    "gap_min_pct": -100.0,
+    "gap_max_pct": 100.0,
+    "breakout_only": False,      # price must be above its prior 20-day high
+    "unusual_volume_only": False, # require volume to be at least 2x its recent average
+    "rsi_min": 0.0,
+    "rsi_max": 100.0,
+    "macd_bullish_only": False,
     "bullish_cross_only": False, # only show 5/20-day SMA bullish crossovers
 }
 
@@ -74,13 +81,28 @@ def fetch_snapshot(tickers):
 
             price = float(intra["Close"].iloc[-1])
             open_price = float(intra["Open"].iloc[0])
+            previous_close = float(day["Close"].iloc[-2])
             volume_today = float(intra["Volume"].sum())
             avg_volume = float(day["Volume"].tail(20).mean())
+            prior_20_high = float(day["High"].iloc[-21:-1].max())
 
             sma5_series = day["Close"].rolling(5).mean()
             sma20_series = day["Close"].rolling(20).mean()
             sma5, sma20 = sma5_series.iloc[-1], sma20_series.iloc[-1]
             prev_sma5, prev_sma20 = sma5_series.iloc[-2], sma20_series.iloc[-2]
+
+            delta = day["Close"].diff()
+            gains = delta.clip(lower=0).rolling(14).mean()
+            losses = (-delta.clip(upper=0)).rolling(14).mean()
+            relative_strength = gains / losses.replace(0, pd.NA)
+            rsi = (100 - (100 / (1 + relative_strength))).fillna(100).iloc[-1]
+
+            ema12 = day["Close"].ewm(span=12, adjust=False).mean()
+            ema26 = day["Close"].ewm(span=26, adjust=False).mean()
+            macd_series = ema12 - ema26
+            macd_signal_series = macd_series.ewm(span=9, adjust=False).mean()
+            macd = macd_series.iloc[-1]
+            macd_signal = macd_signal_series.iloc[-1]
 
             cross_signal = None
             if prev_sma5 <= prev_sma20 and sma5 > sma20:
@@ -92,11 +114,16 @@ def fetch_snapshot(tickers):
                 "symbol": symbol,
                 "price": price,
                 "pct_change": (price - open_price) / open_price * 100,
+                "gap_pct": (open_price - previous_close) / previous_close * 100,
+                "breakout": price >= prior_20_high,
                 "volume": volume_today,
                 "vol_ratio": volume_today / avg_volume if avg_volume else 0,
                 "sma5": float(sma5),
                 "sma20": float(sma20),
                 "cross_signal": cross_signal,
+                "rsi": float(rsi),
+                "macd": float(macd),
+                "macd_signal": float(macd_signal),
             })
         except (KeyError, IndexError):
             # Symbol had no data this pass (delisted, no trades yet, etc).
@@ -116,6 +143,16 @@ def apply_filters(rows, f):
         if abs(r["pct_change"]) < f["min_abs_change_pct"]:
             continue
         if r["vol_ratio"] < f["min_vol_ratio"]:
+            continue
+        if not (f.get("gap_min_pct", -100.0) <= r.get("gap_pct", 0.0) <= f.get("gap_max_pct", 100.0)):
+            continue
+        if f.get("breakout_only", False) and not r.get("breakout", False):
+            continue
+        if f.get("unusual_volume_only", False) and r["vol_ratio"] < 2.0:
+            continue
+        if not (f.get("rsi_min", 0.0) <= r.get("rsi", 50.0) <= f.get("rsi_max", 100.0)):
+            continue
+        if f.get("macd_bullish_only", False) and r.get("macd", 0.0) <= r.get("macd_signal", 0.0):
             continue
         if f["bullish_cross_only"] and r["cross_signal"] != "up":
             continue
