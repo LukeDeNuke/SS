@@ -1,7 +1,9 @@
 """Live Streamlit dashboard for the stock scanner."""
 
 from datetime import datetime
+import json
 import os
+import tempfile
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -47,7 +49,7 @@ DEFAULT_PRESETS = {
 
 
 st.set_page_config(
-    page_title="Market Watch",
+    page_title="Stock Scanner",
     page_icon="🗣️🔥",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -154,9 +156,49 @@ def load_company_context(symbol):
     }
 
 
-def get_paper_client(api_key=None, secret_key=None):
+def load_session_credentials():
+    credentials_path = st.session_state.get("alpaca_credentials_path")
+    if not credentials_path:
+        return None, None
+    try:
+        with open(credentials_path, encoding="utf-8") as credentials_file:
+            credentials = json.load(credentials_file)
+        return credentials.get("api_key"), credentials.get("secret_key")
+    except (OSError, json.JSONDecodeError):
+        return None, None
+
+
+def save_session_credentials(api_key, secret_key):
+    delete_session_credentials()
+    credentials_file = tempfile.NamedTemporaryFile(
+        mode="w",
+        prefix="market_watch_alpaca_",
+        suffix=".json",
+        delete=False,
+        encoding="utf-8",
+    )
+    try:
+        json.dump({"api_key": api_key, "secret_key": secret_key}, credentials_file)
+        credentials_file.flush()
+        os.chmod(credentials_file.name, 0o600)
+        st.session_state.alpaca_credentials_path = credentials_file.name
+    finally:
+        credentials_file.close()
+
+
+def delete_session_credentials():
+    credentials_path = st.session_state.pop("alpaca_credentials_path", None)
+    if credentials_path:
+        try:
+            os.remove(credentials_path)
+        except FileNotFoundError:
+            pass
+
+
+def get_paper_client():
     if TradingClient is None:
         return None, "Install the alpaca-py package to enable paper trading."
+    api_key, secret_key = load_session_credentials()
     api_key = api_key or os.getenv("ALPACA_API_KEY")
     secret_key = secret_key or os.getenv("ALPACA_SECRET_KEY")
     if not api_key or not secret_key:
@@ -241,9 +283,9 @@ def make_chart(bars, symbol, chart_type, dark_mode):
 
 
 st.markdown('<div class="eyebrow">Live market monitor</div>', unsafe_allow_html=True)
-st.title("Market Watch")
+st.title("Stock Scanner")
 st.markdown(
-    "<p class='subtitle'>A quiet view of your watchlist, refreshed from Yahoo Finance as the market moves.</p>",
+    "<p class='subtitle'>watchist of stocks from yahoo finance (cuz were poor)</p>",
     unsafe_allow_html=True,
 )
 
@@ -580,8 +622,9 @@ def live_dashboard():
             st.subheader("Alpaca paper trading")
             st.caption("Paper environment only. Orders are simulated and never sent to a live brokerage account.")
 
-            with st.expander("Connect paper account", expanded=not st.session_state.get("alpaca_connected", False)):
-                st.caption("Keys are used only for this Streamlit session and are not saved to project files.")
+            has_session_credentials = bool(st.session_state.get("alpaca_credentials_path"))
+            with st.expander("Connect paper account", expanded=not has_session_credentials):
+                st.caption("Keys are kept in a temporary owner-only file for this session and are not saved to the project.")
                 with st.form("alpaca_credentials_form", clear_on_submit=False):
                     entered_api_key = st.text_input("Alpaca API key", type="password")
                     entered_secret_key = st.text_input("Alpaca secret key", type="password")
@@ -591,22 +634,17 @@ def live_dashboard():
                     if not entered_api_key.strip() or not entered_secret_key.strip():
                         st.warning("Enter both the Alpaca API key and secret key.")
                     else:
-                        st.session_state.alpaca_api_key = entered_api_key.strip()
-                        st.session_state.alpaca_secret_key = entered_secret_key.strip()
+                        save_session_credentials(entered_api_key.strip(), entered_secret_key.strip())
                         st.session_state.alpaca_connected = False
                         st.rerun(scope="fragment")
 
-                if st.session_state.get("alpaca_api_key"):
+                if has_session_credentials:
                     if st.button("Disconnect paper account"):
-                        st.session_state.pop("alpaca_api_key", None)
-                        st.session_state.pop("alpaca_secret_key", None)
+                        delete_session_credentials()
                         st.session_state.alpaca_connected = False
                         st.rerun(scope="fragment")
 
-            paper_client, connection_error = get_paper_client(
-                st.session_state.get("alpaca_api_key"),
-                st.session_state.get("alpaca_secret_key"),
-            )
+            paper_client, connection_error = get_paper_client()
             if connection_error:
                 st.info(connection_error)
                 st.code("export ALPACA_API_KEY=your_paper_key\nexport ALPACA_SECRET_KEY=your_paper_secret")

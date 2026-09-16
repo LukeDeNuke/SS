@@ -37,8 +37,9 @@ and set `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` to paper-account credentials
 before launching the app. The integration forces `paper=True` and does not use
 live trading endpoints.
 You can also use the Connect paper account form in the Paper Trading tab. Its
-masked credentials are kept only in the current Streamlit session; use Disconnect
-to clear them.
+masked credentials are kept in a temporary owner-only file for the current
+Streamlit session; use Disconnect to delete that file. The temporary file is not
+part of the project and is not committed to Git.
 
 Alternatively, create `.streamlit/secrets.toml` with:
 
