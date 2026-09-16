@@ -1,4 +1,12 @@
-"""Live Streamlit dashboard for the stock scanner."""
+"""Live Streamlit dashboard for the stock scanner.
+
+Layout redesigned as a compact trading-terminal: a scrolling ticker tape up top,
+a chart toolbar (symbol / timeframe / type), a three-pane workspace
+(watchlist | chart | order entry + account), and a tabbed bottom panel for
+everything else (grid of charts, scanner matches, orders, paper account
+details, company/news, trending tickers) -- similar to the panel layout used
+by TradingView / Warrior Trading's software.
+"""
 
 from datetime import datetime
 import json
@@ -71,34 +79,97 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# --------------------------------------------------------------------------
+# Terminal theme -- dark, dense, monospace numerics, colour-coded up/down,
+# scrolling ticker tape. This is intentionally applied regardless of the
+# system theme so the app always reads like trading software.
+# --------------------------------------------------------------------------
 st.markdown(
     """
     <style>
-    :root { --ink: #102a43; --muted: #627d98; --line: #d9e2ec; --accent: #147d92; }
-    .block-container { max-width: 1440px; padding-top: 1rem; padding-bottom: 1rem; }
-    h1 { font-size: 2rem !important; margin-bottom: .2rem !important; }
-    h2 { font-size: 1.35rem !important; margin-top: .65rem !important; margin-bottom: .35rem !important; }
-    h3 { font-size: 1.05rem !important; margin-top: .35rem !important; margin-bottom: .15rem !important; }
-    [data-testid="stVerticalBlock"] { gap: .45rem; }
-    [data-testid="stMetric"] { padding: .35rem .5rem; }
-    [data-testid="stExpander"] { margin-bottom: .35rem; }
+    :root {
+        --bg: #0a0e14;
+        --panel: #10151d;
+        --panel-alt: #141b25;
+        --border: #232b36;
+        --text: #e6edf3;
+        --text-dim: #7c8896;
+        --up: #26a69a;
+        --down: #ef5350;
+        --accent: #2f81f7;
+        --amber: #f2b134;
+    }
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
+        background-color: var(--bg) !important;
+    }
+    [data-testid="stHeader"] { background-color: transparent !important; }
+    [data-testid="stSidebar"] {
+        background-color: var(--panel) !important;
+        border-right: 1px solid var(--border);
+    }
     [data-testid="stSidebar"] [data-testid="stVerticalBlock"] { gap: .3rem; }
-    [data-testid="stMetricValue"] { color: #e8f1f5; }
-    [data-testid="stMetricLabel"] { color: #b8cbd5; }
-    [data-testid="stMetricDelta"] { color: #d7e6ee; }
-    .eyebrow { color: var(--accent); font-size: .78rem; font-weight: 700;
+    .block-container { max-width: 1700px; padding-top: .5rem; padding-bottom: 1rem; }
+
+    h1, h2, h3, h4, h5, label, p, span, .stMarkdown, .stCaption {
+        font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    h1 { font-size: 1.3rem !important; margin: 0 !important; color: var(--text); }
+    h2 { font-size: 1.0rem !important; margin: .2rem 0 !important; color: var(--text); }
+    h3 { font-size: .85rem !important; margin: 0 0 .3rem 0 !important;
+         text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); }
+    [data-testid="stVerticalBlock"] { gap: .4rem; }
+    [data-testid="stExpander"] { margin-bottom: .3rem; background-color: var(--panel-alt);
+        border: 1px solid var(--border); border-radius: 6px; }
+
+    .eyebrow { color: var(--accent); font-size: .72rem; font-weight: 700;
                letter-spacing: .12em; text-transform: uppercase; }
-    .subtitle { color: #d7e6ee; margin-top: -.7rem; }
-    .chart-card { border: 1px solid var(--line); border-radius: 8px; padding: .4rem .6rem .15rem; }
-    .st-key-market-info-panel [data-testid="stMetricValue"] { font-size: 1rem; }
-    .st-key-market-info-panel [data-testid="stMetricLabel"] { font-size: .7rem; }
-    .st-key-market-info-panel [data-testid="stCaptionContainer"] { font-size: .68rem; }
-    .st-key-market-info-panel [data-testid="stDataFrame"] { font-size: .72rem; }
+
+    /* ---- ticker tape ---- */
+    .ticker-tape-wrap { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+        background: var(--panel); overflow-x: auto; white-space: nowrap; padding: .35rem .5rem;
+        margin: .35rem 0 .6rem 0; scrollbar-width: thin; }
+    .ticker-tape-wrap::-webkit-scrollbar { height: 4px; }
+    .ticker-item { display: inline-flex; align-items: baseline; gap: .35rem; margin-right: 1.3rem;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: .78rem; }
+    .ticker-sym { color: var(--text); font-weight: 700; }
+    .ticker-px { color: var(--text-dim); }
+    .up { color: var(--up); font-weight: 600; }
+    .down { color: var(--down); font-weight: 600; }
+
+    /* ---- panel framing for the three-pane workspace ---- */
+    .panel-card { border: 1px solid var(--border); background: var(--panel);
+        border-radius: 8px; padding: .55rem .65rem .35rem; height: 100%; }
+    .panel-card-tight { border: 1px solid var(--border); background: var(--panel);
+        border-radius: 8px; padding: .4rem .55rem .25rem; margin-bottom: .4rem; }
+
+    /* numeric fonts everywhere data shows up */
+    [data-testid="stMetricValue"] { color: var(--text) !important;
+        font-family: "SFMono-Regular", Consolas, monospace; font-size: 1.15rem !important; }
+    [data-testid="stMetricLabel"] { color: var(--text-dim) !important; font-size: .68rem !important;
+        text-transform: uppercase; letter-spacing: .05em; }
+    [data-testid="stMetricDelta"] { font-family: "SFMono-Regular", Consolas, monospace; }
+    [data-testid="stCaptionContainer"] { color: var(--text-dim) !important; font-size: .7rem !important; }
+    [data-testid="stDataFrame"] { font-size: .74rem; }
+
+    /* buy / sell buttons */
+    .buy-btn button { background-color: var(--up) !important; color: #05130f !important;
+        border: none !important; font-weight: 700 !important; }
+    .sell-btn button { background-color: var(--down) !important; color: #170505 !important;
+        border: none !important; font-weight: 700 !important; }
+
+    .status-dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 50%;
+        margin-right: .35rem; }
+    .status-on { background-color: var(--up); }
+    .status-off { background-color: var(--text-dim); }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
+
+# ==========================================================================
+# Data loaders (unchanged from the original scanner -- caching + network I/O)
+# ==========================================================================
 
 @st.cache_data(ttl=45, show_spinner=False)
 def load_snapshot():
@@ -361,11 +432,11 @@ def make_portfolio_chart(history):
     chart.update_layout(
         height=230,
         margin={"l": 8, "r": 8, "t": 12, "b": 8},
-        plot_bgcolor="#101820",
-        paper_bgcolor="#101820",
+        plot_bgcolor="#0a0e14",
+        paper_bgcolor="#0a0e14",
         font={"color": "#d7e6ee"},
         xaxis={"showgrid": False},
-        yaxis={"showgrid": True, "gridcolor": "#263640", "tickprefix": "$"},
+        yaxis={"showgrid": True, "gridcolor": "#232b36", "tickprefix": "$"},
         showlegend=False,
     )
     return chart
@@ -388,7 +459,7 @@ def make_orders_chart(orders):
         })
 
     chart = go.Figure()
-    for side, color in (("buy", "#39c28f"), ("sell", "#e66b6b")):
+    for side, color in (("buy", "#26a69a"), ("sell", "#ef5350")):
         side_rows = [row for row in order_rows if row["side"] == side]
         chart.add_trace(
             go.Scatter(
@@ -404,11 +475,11 @@ def make_orders_chart(orders):
     chart.update_layout(
         height=280,
         margin={"l": 8, "r": 8, "t": 12, "b": 8},
-        plot_bgcolor="#101820",
-        paper_bgcolor="#101820",
+        plot_bgcolor="#0a0e14",
+        paper_bgcolor="#0a0e14",
         font={"color": "#d7e6ee"},
         xaxis={"showgrid": False, "title": "Order time"},
-        yaxis={"showgrid": True, "gridcolor": "#263640", "tickprefix": "$", "title": "Order value"},
+        yaxis={"showgrid": True, "gridcolor": "#232b36", "tickprefix": "$", "title": "Order value"},
         legend={"orientation": "h", "y": 1.08, "x": 0},
     )
     return chart, order_rows
@@ -421,9 +492,9 @@ def format_volume(value):
 
 
 def make_chart(bars, symbol, chart_type, dark_mode):
-    background = "#101820" if dark_mode else "#ffffff"
-    foreground = "#f4f7f9" if dark_mode else "#085fb1"
-    grid = "#263640" if dark_mode else "#edf2f7"
+    background = "#0a0e14" if dark_mode else "#ffffff"
+    foreground = "#e6edf3" if dark_mode else "#085fb1"
+    grid = "#232b36" if dark_mode else "#edf2f7"
     chart = go.Figure()
     if chart_type == "Candlestick":
         chart.add_trace(
@@ -434,10 +505,10 @@ def make_chart(bars, symbol, chart_type, dark_mode):
                 low=bars["Low"],
                 close=bars["Close"],
                 name=symbol,
-                increasing_line_color="#39c28f",
-                increasing_fillcolor="#39c28f",
-                decreasing_line_color="#e66b6b",
-                decreasing_fillcolor="#e66b6b",
+                increasing_line_color="#26a69a",
+                increasing_fillcolor="#26a69a",
+                decreasing_line_color="#ef5350",
+                decreasing_fillcolor="#ef5350",
                 hovertext=symbol,
                 hoverinfo="x+y+name",
             )
@@ -449,7 +520,7 @@ def make_chart(bars, symbol, chart_type, dark_mode):
                 y=bars["Close"],
                 name="Price",
                 mode="lines",
-                line={"color": "#39c28f" if dark_mode else "#147d92", "width": 3},
+                line={"color": "#26a69a" if dark_mode else "#147d92", "width": 3},
                 hovertemplate="$%{y:.2f}<extra></extra>",
             )
         )
@@ -464,10 +535,10 @@ def make_chart(bars, symbol, chart_type, dark_mode):
         )
     )
     chart.update_layout(
-        height=270,
-        margin={"l": 8, "r": 8, "t": 12, "b": 8},
+        height=460,
+        margin={"l": 8, "r": 8, "t": 8, "b": 8},
         hovermode="x unified",
-        legend={"orientation": "h", "y": 1.08, "x": 0},
+        legend={"orientation": "h", "y": 1.05, "x": 0},
         plot_bgcolor=background,
         paper_bgcolor=background,
         font={"color": foreground},
@@ -477,24 +548,58 @@ def make_chart(bars, symbol, chart_type, dark_mode):
     return chart
 
 
+def make_small_chart(bars, symbol, chart_type, dark_mode):
+    """Same as make_chart but sized for the multi-chart grid panels."""
+    figure = make_chart(bars, symbol, chart_type, dark_mode)
+    figure.update_layout(height=270)
+    return figure
+
+
+# ==========================================================================
+# Terminal-specific render helpers
+# ==========================================================================
+
+def render_ticker_tape(rows):
+    items = []
+    for row in sorted(rows, key=lambda r: r["symbol"]):
+        direction = "up" if row["pct_change"] >= 0 else "down"
+        arrow = "▲" if row["pct_change"] >= 0 else "▼"
+        items.append(
+            f'<span class="ticker-item"><span class="ticker-sym">{row["symbol"]}</span>'
+            f'<span class="ticker-px">${row["price"]:.2f}</span>'
+            f'<span class="{direction}">{arrow} {row["pct_change"]:+.2f}%</span></span>'
+        )
+    st.markdown(
+        f'<div class="ticker-tape-wrap">{"".join(items)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def style_watchlist_table(table, match_symbols):
+    def colorize_change(value):
+        try:
+            numeric = float(str(value).replace("%", "").replace("+", ""))
+        except ValueError:
+            return ""
+        color = "#26a69a" if numeric >= 0 else "#ef5350"
+        return f"color: {color}; font-weight: 600;"
+
+    def highlight_match(row):
+        if row.get("Status") == "MATCH":
+            return ["background-color: rgba(47,129,247,0.12)"] * len(row)
+        return [""] * len(row)
+
+    styler = table.style.map(colorize_change, subset=["Today"])
+    styler = styler.apply(highlight_match, axis=1)
+    return styler
+
+
 st.markdown('<div class="eyebrow">Live market monitor</div>', unsafe_allow_html=True)
 st.title("Stock Scanner")
-st.markdown(
-    "<p class='subtitle'>watchist of stocks from yahoo finance (cuz were poor)</p>",
-    unsafe_allow_html=True,
-)
 
 with st.sidebar:
-    with st.expander("Watchlist", expanded=True):
-        selected_symbols = st.multiselect(
-            "Stocks to chart",
-            CHART_SYMBOLS,
-            default=WATCHLIST[:6],
-            help="Choose the stocks shown in the chart grid.",
-        )
-        st.caption("Includes large-cap equities and crypto pairs.")
-
-    with st.expander("Scanner filters", expanded=False):
+    st.markdown("#### Scanner")
+    with st.expander("Filters", expanded=True):
         if "saved_presets" not in st.session_state:
             st.session_state.saved_presets = DEFAULT_PRESETS.copy()
         preset_names = ["Custom"] + list(st.session_state.saved_presets)
@@ -591,22 +696,16 @@ with st.sidebar:
             st.session_state.saved_presets[preset_to_save.strip()] = scanner_filters.copy()
             st.success(f"Saved {preset_to_save.strip()}")
 
-    with st.expander("Chart display", expanded=True):
+    st.markdown("#### Chart grid")
+    with st.expander("Symbols & paging", expanded=False):
+        selected_symbols = st.multiselect(
+            "Symbols in the chart grid",
+            CHART_SYMBOLS,
+            default=WATCHLIST[:6],
+            help="Shown in the bottom 'Charts Grid' tab.",
+        )
         charts_per_page = st.slider("Charts per page", 2, 8, 4)
-        chart_type = st.radio("Chart type", ["Line", "Candlestick"], horizontal=True)
-        dark_mode = st.toggle("Dark chart mode", value=True)
-        chart_interval = st.selectbox("Chart timeframe", ["1m", "5m", "15m", "1h", "1d"], index=0)
-        chart_period_options = ["1d"] if chart_interval == "1m" else ["1d", "5d", "1mo"]
-        chart_period = st.selectbox("Chart range", chart_period_options, index=0)
-        chart_source_options = ["Yahoo Finance"]
-        if alpaca_credentials_available():
-            chart_source_options.append("Alpaca (stocks)")
-        chart_source = st.selectbox("Chart data source", chart_source_options)
-        audio_alerts = st.toggle("Audio alerts for upturns", value=False)
-
-    page_count = max(1, (len(selected_symbols) + charts_per_page - 1) // charts_per_page)
-
-    with st.expander("Refresh", expanded=False):
+        page_count = max(1, (len(selected_symbols) + charts_per_page - 1) // charts_per_page)
         page_number = st.number_input(
             "Chart page",
             min_value=1,
@@ -615,6 +714,9 @@ with st.sidebar:
             step=1,
             disabled=page_count == 1,
         )
+
+    st.markdown("#### Refresh")
+    with st.expander("Auto-refresh", expanded=False):
         refresh_seconds = st.slider("Refresh interval", 15, 300, 30, step=15)
         if st.button("Refresh now", use_container_width=True):
             load_snapshot.clear()
@@ -623,6 +725,32 @@ with st.sidebar:
             load_alpaca_market_depth.clear()
             st.rerun()
         st.caption(f"Updates run every {refresh_seconds}s. Yahoo Finance may still be delayed.")
+
+# --------------------------------------------------------------------------
+# Chart toolbar -- symbol / timeframe / chart type, TradingView-style, sits
+# directly above the three-pane workspace.
+# --------------------------------------------------------------------------
+chart_source_options = ["Yahoo Finance"]
+if alpaca_credentials_available():
+    chart_source_options.append("Alpaca (stocks)")
+
+toolbar = st.columns([2.2, .9, .9, 1.1, .8, 1.3, .9])
+with toolbar[0]:
+    default_index = CHART_SYMBOLS.index(WATCHLIST[0]) if WATCHLIST and WATCHLIST[0] in CHART_SYMBOLS else 0
+    lead_symbol = st.selectbox("Symbol", CHART_SYMBOLS, index=default_index, label_visibility="collapsed")
+with toolbar[1]:
+    chart_interval = st.selectbox("TF", ["1m", "5m", "15m", "1h", "1d"], label_visibility="collapsed")
+with toolbar[2]:
+    chart_period_options = ["1d"] if chart_interval == "1m" else ["1d", "5d", "1mo"]
+    chart_period = st.selectbox("Range", chart_period_options, label_visibility="collapsed")
+with toolbar[3]:
+    chart_type = st.selectbox("Type", ["Candlestick", "Line"], label_visibility="collapsed")
+with toolbar[4]:
+    dark_mode = st.toggle("Dark", value=True)
+with toolbar[5]:
+    chart_source = st.selectbox("Source", chart_source_options, label_visibility="collapsed")
+with toolbar[6]:
+    audio_alerts = st.toggle("Alerts", value=False)
 
 
 @st.fragment(run_every=f"{refresh_seconds}s")
@@ -640,10 +768,17 @@ def live_dashboard():
     previous_match_symbols = st.session_state.get("previous_match_symbols", set())
     new_match_symbols = match_symbols - previous_match_symbols
     st.session_state.previous_match_symbols = match_symbols
-    lead_symbol = selected_symbols[0] if selected_symbols else None
-    selected = next((row for row in rows if row["symbol"] == lead_symbol), None)
-    paper_client_for_orders, _ = get_paper_client()
+    for symbol in sorted(new_match_symbols):
+        st.toast(f"Scanner match: {symbol}", icon="🚨")
 
+    lead_row = next((row for row in rows if row["symbol"] == lead_symbol), None)
+    paper_client_for_orders, paper_client_error = get_paper_client()
+
+    render_ticker_tape(rows)
+
+    # --------------------------------------------------------------------
+    # helper shared by the chart-grid and matches tabs at the bottom
+    # --------------------------------------------------------------------
     def render_chart_grid(symbols, key_prefix):
         if not symbols:
             st.info("No current scanner matches. Matching charts will appear here automatically.")
@@ -676,7 +811,7 @@ def live_dashboard():
                             upturn_started = is_chart_page and rising_now and was_rising is False
                             trend_history[symbol] = rising_now
                             st.plotly_chart(
-                                make_chart(bars, symbol, chart_type, dark_mode),
+                                make_small_chart(bars, symbol, chart_type, dark_mode),
                                 use_container_width=True,
                                 config={"displaylogo": False},
                                 key=f"{key_prefix}-{row_start + column_index}-{symbol}-{chart_period}-{chart_interval}-{chart_source}",
@@ -740,341 +875,387 @@ def live_dashboard():
                                         except Exception as error:
                                             st.error(f"Paper order rejected: {error}")
 
-    main_column, right_column = st.columns([3.4, 1.2], gap="large")
+    # ======================================================================
+    # THREE-PANE WORKSPACE: watchlist | main chart | order entry & account
+    # ======================================================================
+    watchlist_col, chart_col, order_col = st.columns([1.2, 3.3, 1.3], gap="small")
 
-    with right_column:
-        with st.container(key="market-info-panel"):
-            st.subheader("Market info")
-            with st.expander("Market depth", expanded=True):
-                depth_symbol = st.selectbox("Depth symbol", CHART_SYMBOLS, label_visibility="collapsed")
-                depth_uses_alpaca = chart_source == "Alpaca (stocks)" and depth_symbol in TRADING_SYMBOLS
-                depth_error = None
-                try:
-                    if depth_uses_alpaca:
-                        depth, depth_error = load_alpaca_market_depth(depth_symbol)
-                    else:
-                        depth = load_yahoo_market_depth(depth_symbol)
-                except Exception as error:
-                    depth = None
-                    depth_error = str(error)
+    # ---- LEFT: watchlist / scanner table ---------------------------------
+    with watchlist_col:
+        with st.container(key="watchlist-panel"):
+            st.markdown("### Watchlist")
+            table = pd.DataFrame(rows)
+            if not table.empty:
+                table = table.sort_values("pct_change", ascending=False, key=lambda s: s.abs())
+                table["status_flag"] = table["symbol"].map(lambda symbol: "MATCH" if symbol in match_symbols else "")
+                display_table = pd.DataFrame({
+                    "Symbol": table["symbol"],
+                    "Price": table["price"].map(lambda v: f"{v:.2f}"),
+                    "Today": table["pct_change"].map(lambda v: f"{v:+.2f}%"),
+                    "Status": table["status_flag"],
+                })
+                st.dataframe(
+                    style_watchlist_table(display_table, match_symbols),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=560,
+                )
+            st.caption(f"{len(matches)} of {len(rows)} match current filters · updated {timestamp}")
 
-                alpaca_fallback_used = False
-                if (
-                    depth_uses_alpaca
-                    and depth is not None
-                    and (depth.get("ask") in (None, 0) or depth.get("ask_size") in (None, 0))
-                ):
-                    yahoo_depth = load_yahoo_market_depth(depth_symbol)
-                    if yahoo_depth is not None and yahoo_depth.get("ask") not in (None, 0):
-                        yahoo_depth = dict(yahoo_depth)
-                        yahoo_depth["source"] = "Yahoo Finance fallback"
-                        depth = yahoo_depth
-                        alpaca_fallback_used = True
+    # ---- CENTER: main chart -----------------------------------------------
+    with chart_col:
+        with st.container(key="main-chart-panel"):
+            header_cols = st.columns([2, 1, 1, 1])
+            header_cols[0].markdown(f"### {lead_symbol}")
+            if lead_row:
+                header_cols[1].metric("Last", f"${lead_row['price']:.2f}")
+                header_cols[2].metric("Change", f"{lead_row['pct_change']:+.2f}%")
+                header_cols[3].metric("Vol / avg", f"{lead_row['vol_ratio']:.2f}x")
 
-                if depth is None:
-                    st.warning(f"{depth['source'] if depth else 'Market'} quote unavailable for {depth_symbol}: {depth_error or 'no quote returned'}")
+            use_alpaca_main = chart_source == "Alpaca (stocks)" and lead_symbol in TRADING_SYMBOLS
+            main_alpaca_error = None
+            if use_alpaca_main:
+                main_bars, main_alpaca_error = load_alpaca_chart(lead_symbol, chart_period, chart_interval)
+            else:
+                main_bars = load_chart(lead_symbol, chart_period, chart_interval)
+
+            if main_bars.empty:
+                if main_alpaca_error:
+                    st.warning(f"Alpaca chart unavailable for {lead_symbol}: {main_alpaca_error}")
                 else:
-                    midpoint = (
-                        (depth["bid"] + depth["ask"]) / 2
-                        if depth["bid"] is not None and depth["ask"] is not None
-                        else None
-                    )
-                    spread = (
-                        depth["ask"] - depth["bid"]
-                        if depth["bid"] is not None and depth["ask"] is not None
-                        else None
-                    )
-                    st.caption(
-                        f"Live source: {depth['source']}"
-                        + (" · Alpaca ask unavailable" if alpaca_fallback_used else "")
-                    )
-                    quote_columns = st.columns(2)
-                    quote_columns[0].metric("Bid", f"${depth['bid']:.2f}" if depth["bid"] is not None else "--")
-                    quote_columns[1].metric("Ask", f"${depth['ask']:.2f}" if depth["ask"] is not None else "--")
-                    quote_rows = [
-                        {"Quote": "Bid size", "Value": str(depth["bid_size"] or "--")},
-                        {"Quote": "Ask size", "Value": str(depth["ask_size"] or "--")},
-                        {"Quote": "Spread", "Value": str(f"${spread:.4f}" if spread is not None else "--")},
-                        {"Quote": "Midpoint", "Value": str(f"${midpoint:.2f}" if midpoint is not None else "--")},
-                    ]
-                    if depth.get("last") is not None:
-                        quote_rows.extend([
-                            {"Quote": "Last trade", "Value": str(f"${depth['last']:.2f}")},
-                            {"Quote": "Last size", "Value": str(depth.get("last_size") or "--")},
-                        ])
-                    if depth.get("quote_time") is not None:
-                        quote_rows.append({"Quote": "Quote time", "Value": str(depth["quote_time"])})
-                    st.dataframe(
-                        pd.DataFrame(quote_rows),
-                        use_container_width=True,
-                        hide_index=True,
-                        height=220 if depth.get("last") is not None else 170,
-                    )
-
-        with st.expander("Company context", expanded=False):
-            try:
-                context = load_company_context(depth_symbol)
-            except Exception as error:
-                st.warning(f"Company information unavailable: {error}")
-                context = None
-
-            if context:
-                context_rows = [
-                    {"Field": "Sector", "Value": context["sector"]},
-                    {"Field": "Industry", "Value": context["industry"]},
-                    {"Field": "Market cap", "Value": format_volume(context["market_cap"]) if context["market_cap"] else "--"},
-                    {"Field": "Trailing P/E", "Value": f"{context['pe']:.2f}" if context["pe"] else "--"},
-                    {"Field": "Dividend yield", "Value": f"{context['dividend_yield']:.2%}" if context["dividend_yield"] else "--"},
-                    {"Field": "Analyst view", "Value": context["recommendation"]},
-                    {
-                        "Field": "Earnings date",
-                        "Value": datetime.fromtimestamp(context["earnings_date"]).strftime("%Y-%m-%d")
-                        if context["earnings_date"] else "--",
-                    },
-                ]
-                st.dataframe(
-                    pd.DataFrame(context_rows),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=225,
-                )
-                with st.expander("Latest news", expanded=False):
-                    if context["news"]:
-                        for article in context["news"]:
-                            content = article.get("content", article)
-                            title = content.get("title", "Untitled")
-                            canonical_url = content.get("canonicalUrl", {})
-                            click_url = content.get("clickThroughUrl", {})
-                            link = canonical_url.get("url") or click_url.get("url")
-                            st.markdown(f"- [{title}]({link})" if link else f"- {title}")
-                    else:
-                        st.caption("No recent news available.")
-
-        with st.expander("Trending tickers", expanded=True):
-            st.caption("Yahoo's most-active equity screen, refreshed periodically.")
-            try:
-                trending = load_trending_tickers()
-            except Exception as error:
-                st.warning(f"Trending data unavailable: {error}")
-                trending = []
-
-            if trending:
-                trending_table = pd.DataFrame(trending)
-                trending_table["Price"] = trending_table["Price"].map(lambda value: f"${value:.2f}")
-                trending_table["Move"] = trending_table["Move"].map(lambda value: f"{value:+.2f}%")
-                trending_table["Volume"] = trending_table["Volume"].map(format_volume)
-                st.dataframe(
-                    trending_table,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=min(320, 38 + len(trending_table) * 35),
-                )
+                    st.info(f"No bars are available for {lead_symbol} right now.")
             else:
-                st.info("No trending ticker data is available right now.")
+                st.plotly_chart(
+                    make_chart(main_bars, lead_symbol, chart_type, dark_mode),
+                    use_container_width=True,
+                    config={"displaylogo": False},
+                    key=f"main-chart-{lead_symbol}-{chart_period}-{chart_interval}-{chart_source}",
+                )
+                st.caption(
+                    f"Last bar: {main_bars.index[-1].strftime('%H:%M')}  ·  "
+                    f"Close ${main_bars['Close'].iloc[-1]:.2f}  ·  Updated {timestamp}"
+                )
 
-    with main_column:
-        overview_tab, charts_tab, matches_tab, paper_tab, orders_tab = st.tabs(
-            ["Overview", "Charts", "Matches", "Paper Trading", "Orders"]
-        )
+    # ---- RIGHT: market depth + order entry + account ----------------------
+    with order_col:
+        with st.container(key="order-panel"):
+            st.markdown("### Market depth")
+            depth_uses_alpaca = chart_source == "Alpaca (stocks)" and lead_symbol in TRADING_SYMBOLS
+            depth_error = None
+            try:
+                if depth_uses_alpaca:
+                    depth, depth_error = load_alpaca_market_depth(lead_symbol)
+                else:
+                    depth = load_yahoo_market_depth(lead_symbol)
+            except Exception as error:
+                depth = None
+                depth_error = str(error)
 
-        with overview_tab:
-            metric_columns = st.columns(4)
-            metric_columns[0].metric("Symbols tracked", len(rows))
-            metric_columns[1].metric("Scanner matches", len(matches))
-            metric_columns[2].metric("Lead price", f"${selected['price']:.2f}" if selected else "--")
-            metric_columns[3].metric(
-                "Today's move",
-                f"{selected['pct_change']:+.2f}%" if selected else "--",
-                delta_color="normal",
-            )
-            if new_match_symbols:
-                st.success(f"New scanner matches: {', '.join(sorted(new_match_symbols))}")
+            alpaca_fallback_used = False
+            if (
+                depth_uses_alpaca
+                and depth is not None
+                and (depth.get("ask") in (None, 0) or depth.get("ask_size") in (None, 0))
+            ):
+                yahoo_depth = load_yahoo_market_depth(lead_symbol)
+                if yahoo_depth is not None and yahoo_depth.get("ask") not in (None, 0):
+                    yahoo_depth = dict(yahoo_depth)
+                    yahoo_depth["source"] = "Yahoo Finance fallback"
+                    depth = yahoo_depth
+                    alpaca_fallback_used = True
 
-            with st.expander("Watchlist details", expanded=True):
-                table = pd.DataFrame(rows)
-                if not table.empty:
-                    table["status"] = table["symbol"].map(lambda symbol: "MATCH" if symbol in match_symbols else "watch")
-                    table["price"] = table["price"].map(lambda value: f"${value:.2f}")
-                    table["pct_change"] = table["pct_change"].map(lambda value: f"{value:+.2f}%")
-                    table["gap_pct"] = table["gap_pct"].map(lambda value: f"{value:+.2f}%")
-                    table["volume"] = table["volume"].map(format_volume)
-                    table["vol_ratio"] = table["vol_ratio"].map(lambda value: f"{value:.2f}x")
-                    table["rsi"] = table["rsi"].map(lambda value: f"{value:.1f}")
-                    table["macd"] = table["macd"].map(lambda value: f"{value:.2f}")
-                    table = table.rename(columns={
-                        "symbol": "Symbol", "price": "Price", "pct_change": "Today",
-                        "gap_pct": "Gap", "volume": "Volume", "vol_ratio": "Vol / avg",
-                        "rsi": "RSI", "macd": "MACD", "status": "Status",
-                    })
-                    st.dataframe(
-                        table[["Symbol", "Price", "Today", "Gap", "Volume", "Vol / avg", "RSI", "MACD", "Status"]],
-                        use_container_width=True,
-                        hide_index=True,
-                        height=230,
-                    )
-                    st.download_button(
-                        "Download snapshot CSV",
-                        pd.DataFrame(rows).to_csv(index=False),
-                        file_name="market_snapshot.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                    )
-
-        with charts_tab:
-            st.subheader(f"Price tracking · page {page_number} of {page_count}")
-            page_start = (page_number - 1) * charts_per_page
-            page_symbols = selected_symbols[page_start:page_start + charts_per_page]
-            render_chart_grid(page_symbols, f"charts-page-{page_number}")
-
-        with matches_tab:
-            st.subheader(f"Current matches · {len(matches)}")
-            st.caption("This tab updates automatically and only shows stocks that currently satisfy the scanner filters.")
-            render_chart_grid([row["symbol"] for row in matches], "matches")
-
-        with paper_tab:
-            st.subheader("Alpaca paper trading")
-            st.caption("Paper environment only. Orders are simulated and never sent to a live brokerage account.")
-
-            credentials_available = session_credentials_available()
-            with st.expander("Connect paper account", expanded=not credentials_available):
-                st.caption("Keys are kept in a temporary owner-only file for this session and are not saved to the project.")
-                with st.form("alpaca_credentials_form", clear_on_submit=False):
-                    entered_api_key = st.text_input("Alpaca API key", type="password")
-                    entered_secret_key = st.text_input("Alpaca secret key", type="password")
-                    connect_account = st.form_submit_button("Connect paper account", type="primary")
-
-                if connect_account:
-                    if not entered_api_key.strip() or not entered_secret_key.strip():
-                        st.warning("Enter both the Alpaca API key and secret key.")
-                    else:
-                        save_session_credentials(entered_api_key.strip(), entered_secret_key.strip())
-                        st.session_state.alpaca_connected = False
-                        st.rerun()
-
-                if credentials_available:
-                    if st.button("Disconnect paper account"):
-                        delete_session_credentials()
-                        st.session_state.alpaca_connected = False
-                        st.rerun()
-
-            paper_client, connection_error = get_paper_client()
-            if connection_error:
-                st.info(connection_error)
-                st.code("export ALPACA_API_KEY=your_paper_key\nexport ALPACA_SECRET_KEY=your_paper_secret")
+            if depth is None:
+                st.warning(f"Quote unavailable for {lead_symbol}: {depth_error or 'no quote returned'}")
             else:
-                try:
-                    account = paper_client.get_account()
-                    st.session_state.alpaca_connected = True
-                    record_portfolio_value(account.portfolio_value)
-                    account_columns = st.columns(3)
-                    account_columns[0].metric("Buying power", format_money(account.buying_power))
-                    account_columns[1].metric("Portfolio value", format_money(account.portfolio_value))
-                    account_columns[2].metric("Account status", str(account.status))
+                bid_col, ask_col = st.columns(2)
+                bid_col.metric("Bid", f"${depth['bid']:.2f}" if depth["bid"] is not None else "--")
+                ask_col.metric("Ask", f"${depth['ask']:.2f}" if depth["ask"] is not None else "--")
+                st.caption(
+                    f"{depth['source']}" + (" · Alpaca ask unavailable" if alpaca_fallback_used else "")
+                )
 
-                    with st.expander("Portfolio value history", expanded=True):
-                        history = st.session_state.get("portfolio_value_history", [])
-                        st.caption("Live history collected during this Streamlit session. It resets when the session ends.")
-                        if len(history) >= 1:
-                            st.plotly_chart(
-                                make_portfolio_chart(history),
-                                use_container_width=True,
-                                config={"displaylogo": False},
-                                key="paper-portfolio-value-history",
+            st.markdown("### Order entry")
+            if paper_client_error:
+                st.info("Connect a paper account in the 'Paper Account' tab below to trade.")
+            else:
+                order_symbol_default = lead_symbol if lead_symbol in TRADING_SYMBOLS else TRADING_SYMBOLS[0]
+                with st.form("order_entry_form", clear_on_submit=False):
+                    order_symbol = st.selectbox(
+                        "Symbol", TRADING_SYMBOLS,
+                        index=TRADING_SYMBOLS.index(order_symbol_default),
+                    )
+                    order_type = st.radio("Type", ["Market", "Limit"], horizontal=True)
+                    order_quantity = st.number_input("Qty", min_value=0.0001, value=1.0, step=1.0)
+                    limit_price = st.number_input(
+                        "Limit price", min_value=0.01, value=100.0, step=0.01,
+                        disabled=order_type == "Market",
+                    )
+                    confirm_order = st.checkbox("Confirm paper order")
+                    buy_col, sell_col = st.columns(2)
+                    with buy_col:
+                        st.markdown('<div class="buy-btn">', unsafe_allow_html=True)
+                        submit_buy = st.form_submit_button("BUY", use_container_width=True)
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    with sell_col:
+                        st.markdown('<div class="sell-btn">', unsafe_allow_html=True)
+                        submit_sell = st.form_submit_button("SELL", use_container_width=True)
+                        st.markdown('</div>', unsafe_allow_html=True)
+
+                if submit_buy or submit_sell:
+                    if not confirm_order:
+                        st.warning("Confirm the paper-order checkbox before submitting.")
+                    else:
+                        side = OrderSide.BUY if submit_buy else OrderSide.SELL
+                        if order_type == "Market":
+                            order_request = MarketOrderRequest(
+                                symbol=order_symbol,
+                                qty=order_quantity,
+                                side=side,
+                                time_in_force=TimeInForce.DAY,
                             )
                         else:
-                            st.info("Portfolio history will appear after the first account refresh.")
+                            order_request = LimitOrderRequest(
+                                symbol=order_symbol,
+                                qty=order_quantity,
+                                side=side,
+                                time_in_force=TimeInForce.DAY,
+                                limit_price=limit_price,
+                            )
+                        try:
+                            order = paper_client_for_orders.submit_order(order_data=order_request)
+                            st.success(f"Paper order submitted: {order.id} ({order.status})")
+                        except Exception as error:
+                            st.error(f"Paper order rejected: {error}")
 
-                    positions = paper_client.get_all_positions()
-                    with st.expander(f"Positions · {len(positions)}", expanded=True):
-                        if positions:
-                            position_rows = [
-                                {
-                                    "Symbol": position.symbol,
-                                    "Qty": position.qty,
-                                    "Value": format_money(position.market_value),
-                                    "P/L": format_money(position.unrealized_pl),
-                                }
-                                for position in positions
-                            ]
-                            st.dataframe(pd.DataFrame(position_rows), use_container_width=True, hide_index=True)
-                        else:
-                            st.caption("No paper positions yet.")
-
-                    with st.form("paper_order_form", clear_on_submit=False):
-                        st.markdown("#### Submit paper order")
-                        order_symbol = st.selectbox("Symbol", TRADING_SYMBOLS)
-                        order_side = st.radio("Side", ["Buy", "Sell"], horizontal=True)
-                        order_type = st.radio("Order type", ["Market", "Limit"], horizontal=True)
-                        order_quantity = st.number_input("Quantity", min_value=0.0001, value=1.0, step=1.0)
-                        limit_price = st.number_input("Limit price", min_value=0.01, value=100.0, step=0.01, disabled=order_type == "Market")
-                        confirm_order = st.checkbox("I understand this submits an order to my Alpaca paper account.")
-                        submit_order = st.form_submit_button("Submit paper order", type="primary")
-
-                    if submit_order:
-                        if not confirm_order:
-                            st.warning("Confirm the paper-order checkbox before submitting.")
-                        else:
-                            side = OrderSide.BUY if order_side == "Buy" else OrderSide.SELL
-                            if order_type == "Market":
-                                order_request = MarketOrderRequest(
-                                    symbol=order_symbol,
-                                    qty=order_quantity,
-                                    side=side,
-                                    time_in_force=TimeInForce.DAY,
-                                )
-                            else:
-                                order_request = LimitOrderRequest(
-                                    symbol=order_symbol,
-                                    qty=order_quantity,
-                                    side=side,
-                                    time_in_force=TimeInForce.DAY,
-                                    limit_price=limit_price,
-                                )
-                            try:
-                                order = paper_client.submit_order(order_data=order_request)
-                                st.success(f"Paper order submitted: {order.id} ({order.status})")
-                            except Exception as error:
-                                st.error(f"Paper order rejected: {error}")
-                except Exception as error:
-                    st.error(f"Could not load Alpaca paper account: {error}")
-
-        with orders_tab:
-            st.subheader("Paper-account orders")
-            st.caption("This graph shows orders from the connected Alpaca paper account only.")
-            orders_client, orders_error = get_paper_client()
-            if orders_error:
-                st.info(orders_error)
+            st.markdown("### Account")
+            if paper_client_error:
+                st.caption(paper_client_error)
             else:
                 try:
-                    order_filter = GetOrdersRequest(
-                        status=QueryOrderStatus.ALL,
-                        limit=100,
-                        nested=True,
-                    )
-                    account_orders = orders_client.get_orders(filter=order_filter)
-                    if not account_orders:
-                        st.info("No paper-account orders are available yet.")
+                    account = paper_client_for_orders.get_account()
+                    record_portfolio_value(account.portfolio_value)
+                    acct_col1, acct_col2 = st.columns(2)
+                    acct_col1.metric("Buying power", format_money(account.buying_power))
+                    acct_col2.metric("Portfolio", format_money(account.portfolio_value))
+
+                    positions = paper_client_for_orders.get_all_positions()
+                    if positions:
+                        position_rows = [
+                            {
+                                "Sym": position.symbol,
+                                "Qty": position.qty,
+                                "Value": format_money(position.market_value),
+                                "P/L": format_money(position.unrealized_pl),
+                            }
+                            for position in positions
+                        ]
+                        st.dataframe(
+                            pd.DataFrame(position_rows),
+                            use_container_width=True, hide_index=True, height=160,
+                        )
                     else:
-                        order_chart, order_rows = make_orders_chart(account_orders)
+                        st.caption("No open positions.")
+                except Exception as error:
+                    st.error(f"Could not load account: {error}")
+
+    st.divider()
+
+    # ======================================================================
+    # BOTTOM PANEL: everything else, tabbed, like a terminal's bottom dock
+    # ======================================================================
+    grid_tab, matches_tab, orders_tab, paper_tab, info_tab, trending_tab = st.tabs(
+        ["Charts Grid", "Scanner Matches", "Orders", "Paper Account", "Company & News", "Trending"]
+    )
+
+    with grid_tab:
+        st.subheader(f"Price tracking · page {page_number} of {page_count}")
+        page_start = (page_number - 1) * charts_per_page
+        page_symbols = selected_symbols[page_start:page_start + charts_per_page]
+        render_chart_grid(page_symbols, f"charts-page-{page_number}")
+        st.download_button(
+            "Download snapshot CSV",
+            pd.DataFrame(rows).to_csv(index=False),
+            file_name="market_snapshot.csv",
+            mime="text/csv",
+        )
+
+    with matches_tab:
+        st.subheader(f"Current matches · {len(matches)}")
+        st.caption("Updates automatically and only shows stocks that currently satisfy the scanner filters.")
+        render_chart_grid([row["symbol"] for row in matches], "matches")
+
+    with orders_tab:
+        st.subheader("Paper-account orders")
+        st.caption("This graph shows orders from the connected Alpaca paper account only.")
+        orders_client, orders_error = get_paper_client()
+        if orders_error:
+            st.info(orders_error)
+        else:
+            try:
+                order_filter = GetOrdersRequest(
+                    status=QueryOrderStatus.ALL,
+                    limit=100,
+                    nested=True,
+                )
+                account_orders = orders_client.get_orders(filter=order_filter)
+                if not account_orders:
+                    st.info("No paper-account orders are available yet.")
+                else:
+                    order_chart, order_rows = make_orders_chart(account_orders)
+                    st.plotly_chart(
+                        order_chart,
+                        use_container_width=True,
+                        config={"displaylogo": False},
+                        key="paper-account-orders-chart",
+                    )
+                    order_table = pd.DataFrame([
+                        {
+                            "Time": row["time"].strftime("%Y-%m-%d %H:%M"),
+                            "Symbol": row["symbol"],
+                            "Side": row["side"].title(),
+                            "Value": format_money(row["notional"]),
+                            "Status": row["status"].title(),
+                        }
+                        for row in order_rows
+                    ])
+                    st.dataframe(order_table, use_container_width=True, hide_index=True)
+            except Exception as error:
+                st.error(f"Could not load paper-account orders: {error}")
+
+    with paper_tab:
+        st.subheader("Alpaca paper trading account")
+        st.caption("Paper environment only. Orders are simulated and never sent to a live brokerage account.")
+
+        credentials_available = session_credentials_available()
+        with st.expander("Connect paper account", expanded=not credentials_available):
+            st.caption("Keys are kept in a temporary owner-only file for this session and are not saved to the project.")
+            with st.form("alpaca_credentials_form", clear_on_submit=False):
+                entered_api_key = st.text_input("Alpaca API key", type="password")
+                entered_secret_key = st.text_input("Alpaca secret key", type="password")
+                connect_account = st.form_submit_button("Connect paper account", type="primary")
+
+            if connect_account:
+                if not entered_api_key.strip() or not entered_secret_key.strip():
+                    st.warning("Enter both the Alpaca API key and secret key.")
+                else:
+                    save_session_credentials(entered_api_key.strip(), entered_secret_key.strip())
+                    st.session_state.alpaca_connected = False
+                    st.rerun()
+
+            if credentials_available:
+                if st.button("Disconnect paper account"):
+                    delete_session_credentials()
+                    st.session_state.alpaca_connected = False
+                    st.rerun()
+
+        paper_client, connection_error = get_paper_client()
+        if connection_error:
+            st.info(connection_error)
+            st.code("export ALPACA_API_KEY=your_paper_key\nexport ALPACA_SECRET_KEY=your_paper_secret")
+        else:
+            try:
+                account = paper_client.get_account()
+                st.session_state.alpaca_connected = True
+                account_columns = st.columns(3)
+                account_columns[0].metric("Buying power", format_money(account.buying_power))
+                account_columns[1].metric("Portfolio value", format_money(account.portfolio_value))
+                account_columns[2].metric("Account status", str(account.status))
+
+                with st.expander("Portfolio value history", expanded=True):
+                    history = st.session_state.get("portfolio_value_history", [])
+                    st.caption("Live history collected during this Streamlit session. It resets when the session ends.")
+                    if len(history) >= 1:
                         st.plotly_chart(
-                            order_chart,
+                            make_portfolio_chart(history),
                             use_container_width=True,
                             config={"displaylogo": False},
-                            key="paper-account-orders-chart",
+                            key="paper-portfolio-value-history",
                         )
-                        order_table = pd.DataFrame([
+                    else:
+                        st.info("Portfolio history will appear after the first account refresh.")
+
+                positions = paper_client.get_all_positions()
+                with st.expander(f"Positions · {len(positions)}", expanded=True):
+                    if positions:
+                        position_rows = [
                             {
-                                "Time": row["time"].strftime("%Y-%m-%d %H:%M"),
-                                "Symbol": row["symbol"],
-                                "Side": row["side"].title(),
-                                "Value": format_money(row["notional"]),
-                                "Status": row["status"].title(),
+                                "Symbol": position.symbol,
+                                "Qty": position.qty,
+                                "Value": format_money(position.market_value),
+                                "P/L": format_money(position.unrealized_pl),
                             }
-                            for row in order_rows
-                        ])
-                        st.dataframe(order_table, use_container_width=True, hide_index=True)
-                except Exception as error:
-                    st.error(f"Could not load paper-account orders: {error}")
+                            for position in positions
+                        ]
+                        st.dataframe(pd.DataFrame(position_rows), use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("No paper positions yet.")
+            except Exception as error:
+                st.error(f"Could not load Alpaca paper account: {error}")
+
+    with info_tab:
+        st.subheader(f"Company context · {lead_symbol}")
+        try:
+            context = load_company_context(lead_symbol)
+        except Exception as error:
+            st.warning(f"Company information unavailable: {error}")
+            context = None
+
+        if context:
+            context_rows = [
+                {"Field": "Sector", "Value": context["sector"]},
+                {"Field": "Industry", "Value": context["industry"]},
+                {"Field": "Market cap", "Value": format_volume(context["market_cap"]) if context["market_cap"] else "--"},
+                {"Field": "Trailing P/E", "Value": f"{context['pe']:.2f}" if context["pe"] else "--"},
+                {"Field": "Dividend yield", "Value": f"{context['dividend_yield']:.2%}" if context["dividend_yield"] else "--"},
+                {"Field": "Analyst view", "Value": context["recommendation"]},
+                {
+                    "Field": "Earnings date",
+                    "Value": datetime.fromtimestamp(context["earnings_date"]).strftime("%Y-%m-%d")
+                    if context["earnings_date"] else "--",
+                },
+            ]
+            info_col1, info_col2 = st.columns([1, 1.4])
+            with info_col1:
+                st.dataframe(
+                    pd.DataFrame(context_rows),
+                    use_container_width=True, hide_index=True, height=260,
+                )
+            with info_col2:
+                st.markdown("##### Latest news")
+                if context["news"]:
+                    for article in context["news"]:
+                        content = article.get("content", article)
+                        title = content.get("title", "Untitled")
+                        canonical_url = content.get("canonicalUrl", {})
+                        click_url = content.get("clickThroughUrl", {})
+                        link = canonical_url.get("url") or click_url.get("url")
+                        st.markdown(f"- [{title}]({link})" if link else f"- {title}")
+                else:
+                    st.caption("No recent news available.")
+
+    with trending_tab:
+        st.subheader("Trending tickers")
+        st.caption("Yahoo's most-active equity screen, refreshed periodically.")
+        try:
+            trending = load_trending_tickers()
+        except Exception as error:
+            st.warning(f"Trending data unavailable: {error}")
+            trending = []
+
+        if trending:
+            trending_table = pd.DataFrame(trending)
+            trending_table["Price"] = trending_table["Price"].map(lambda value: f"${value:.2f}")
+            trending_table["Move"] = trending_table["Move"].map(lambda value: f"{value:+.2f}%")
+            trending_table["Volume"] = trending_table["Volume"].map(format_volume)
+            st.dataframe(
+                trending_table,
+                use_container_width=True,
+                hide_index=True,
+                height=min(320, 38 + len(trending_table) * 35),
+            )
+        else:
+            st.info("No trending ticker data is available right now.")
 
 
 live_dashboard()
+
