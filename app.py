@@ -15,6 +15,9 @@ try:
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.trading.requests import GetOrdersRequest, LimitOrderRequest, MarketOrderRequest
     from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 except ImportError:
     TradingClient = None
     OrderSide = None
@@ -23,6 +26,10 @@ except ImportError:
     MarketOrderRequest = None
     GetOrdersRequest = None
     QueryOrderStatus = None
+    StockHistoricalDataClient = None
+    StockBarsRequest = None
+    TimeFrame = None
+    TimeFrameUnit = None
 
 from stock_scanner import FILTERS, POLL_SECONDS, WATCHLIST, apply_filters, fetch_snapshot
 
@@ -107,6 +114,44 @@ def load_chart(symbol, period, interval):
     return bars
 
 
+def load_alpaca_chart(symbol, period, interval):
+    api_key, secret_key = load_session_credentials()
+    api_key = api_key or os.getenv("ALPACA_API_KEY")
+    secret_key = secret_key or os.getenv("ALPACA_SECRET_KEY")
+    if not api_key or not secret_key or StockHistoricalDataClient is None:
+        return pd.DataFrame()
+
+    timeframe_map = {
+        "1m": TimeFrame.Minute,
+        "5m": TimeFrame(5, TimeFrameUnit.Minute),
+        "15m": TimeFrame(15, TimeFrameUnit.Minute),
+        "1h": TimeFrame.Hour,
+        "1d": TimeFrame.Day,
+    }
+    period_days = {"1d": 1, "5d": 5, "1mo": 30}[period]
+    end = datetime.now().astimezone()
+    start = end - pd.Timedelta(days=period_days)
+    client = StockHistoricalDataClient(api_key, secret_key)
+    request = StockBarsRequest(
+        symbol_or_symbols=symbol,
+        start=start.to_pydatetime(),
+        end=end.to_pydatetime(),
+        timeframe=timeframe_map[interval],
+    )
+    bars = client.get_stock_bars(request).df
+    if bars.empty:
+        return pd.DataFrame()
+    if isinstance(bars.index, pd.MultiIndex):
+        bars = bars.droplevel("symbol")
+    bars = bars.rename(columns={
+        "open": "Open", "high": "High", "low": "Low", "close": "Close",
+        "volume": "Volume",
+    })
+    bars = bars.dropna(subset=["Open", "High", "Low", "Close"]).copy()
+    bars["SMA 5"] = bars["Close"].rolling(5).mean()
+    return bars
+
+
 @st.cache_data(ttl=30, show_spinner=False)
 def load_market_depth(symbol):
     """Return Yahoo's latest top-of-book quote for one symbol."""
@@ -174,6 +219,12 @@ def load_session_credentials():
 def session_credentials_available():
     api_key, secret_key = load_session_credentials()
     return bool(api_key and secret_key)
+
+
+def alpaca_credentials_available():
+    if StockHistoricalDataClient is None:
+        return False
+    return session_credentials_available() or bool(os.getenv("ALPACA_API_KEY") and os.getenv("ALPACA_SECRET_KEY"))
 
 
 def save_session_credentials(api_key, secret_key):
@@ -486,6 +537,10 @@ with st.sidebar:
         chart_interval = st.selectbox("Chart timeframe", ["1m", "5m", "15m", "1h", "1d"], index=0)
         chart_period_options = ["1d"] if chart_interval == "1m" else ["1d", "5d", "1mo"]
         chart_period = st.selectbox("Chart range", chart_period_options, index=0)
+        chart_source_options = ["Yahoo Finance"]
+        if alpaca_credentials_available():
+            chart_source_options.append("Alpaca (stocks)")
+        chart_source = st.selectbox("Chart data source", chart_source_options)
 
     page_count = max(1, (len(selected_symbols) + charts_per_page - 1) // charts_per_page)
 
@@ -538,15 +593,21 @@ def live_dashboard():
                 with column:
                     with st.container(border=True):
                         st.markdown(f"### {symbol}")
-                        bars = load_chart(symbol, chart_period, chart_interval)
+                        use_alpaca = chart_source == "Alpaca (stocks)" and symbol in TRADING_SYMBOLS
+                        bars = (
+                            load_alpaca_chart(symbol, chart_period, chart_interval)
+                            if use_alpaca
+                            else load_chart(symbol, chart_period, chart_interval)
+                        )
                         if bars.empty:
-                            st.info(f"No intraday bars are available for {symbol} right now.")
+                            source_name = "Alpaca" if use_alpaca else "Yahoo Finance"
+                            st.info(f"No bars are available for {symbol} from {source_name} right now.")
                         else:
                             st.plotly_chart(
                                 make_chart(bars, symbol, chart_type, dark_mode),
                                 use_container_width=True,
                                 config={"displaylogo": False},
-                                key=f"{key_prefix}-{row_start + column_index}-{symbol}-{chart_period}-{chart_interval}",
+                                key=f"{key_prefix}-{row_start + column_index}-{symbol}-{chart_period}-{chart_interval}-{chart_source}",
                             )
                             latest_bar = bars.iloc[-1]
                             st.caption(
@@ -725,13 +786,13 @@ def live_dashboard():
                     else:
                         save_session_credentials(entered_api_key.strip(), entered_secret_key.strip())
                         st.session_state.alpaca_connected = False
-                        st.rerun(scope="fragment")
+                        st.rerun()
 
                 if credentials_available:
                     if st.button("Disconnect paper account"):
                         delete_session_credentials()
                         st.session_state.alpaca_connected = False
-                        st.rerun(scope="fragment")
+                        st.rerun()
 
             paper_client, connection_error = get_paper_client()
             if connection_error:

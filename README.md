@@ -45,6 +45,10 @@ and displays a live session-only value history chart. That chart resets when the
 Streamlit session ends.
 The Orders tab separately graphs the connected Alpaca paper account's submitted
 orders, with buy/sell markers, order value, status, and timestamp.
+When an Alpaca paper account is connected, the Chart display controls include an
+`Alpaca (stocks)` data source. Stock charts can then use Alpaca historical bars;
+crypto charts continue to use Yahoo Finance because this integration uses
+Alpaca's stock-data endpoint.
 
 Alternatively, create `.streamlit/secrets.toml` with:
 
