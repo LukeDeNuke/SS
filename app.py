@@ -168,6 +168,11 @@ def load_session_credentials():
         return None, None
 
 
+def session_credentials_available():
+    api_key, secret_key = load_session_credentials()
+    return bool(api_key and secret_key)
+
+
 def save_session_credentials(api_key, secret_key):
     delete_session_credentials()
     credentials_file = tempfile.NamedTemporaryFile(
@@ -217,6 +222,38 @@ def get_paper_client():
 
 def format_money(value):
     return f"${float(value):,.2f}"
+
+
+def record_portfolio_value(value):
+    history = st.session_state.setdefault("portfolio_value_history", [])
+    history.append({"Time": datetime.now(), "Portfolio value": float(value)})
+    st.session_state.portfolio_value_history = history[-500:]
+
+
+def make_portfolio_chart(history):
+    chart = go.Figure()
+    chart.add_trace(
+        go.Scatter(
+            x=[point["Time"] for point in history],
+            y=[point["Portfolio value"] for point in history],
+            mode="lines+markers",
+            name="Portfolio value",
+            line={"color": "#39c28f", "width": 2},
+            marker={"size": 5},
+            hovertemplate="$%{y:,.2f}<extra></extra>",
+        )
+    )
+    chart.update_layout(
+        height=230,
+        margin={"l": 8, "r": 8, "t": 12, "b": 8},
+        plot_bgcolor="#101820",
+        paper_bgcolor="#101820",
+        font={"color": "#d7e6ee"},
+        xaxis={"showgrid": False},
+        yaxis={"showgrid": True, "gridcolor": "#263640", "tickprefix": "$"},
+        showlegend=False,
+    )
+    return chart
 
 
 def format_volume(value):
@@ -628,8 +665,8 @@ def live_dashboard():
             st.subheader("Alpaca paper trading")
             st.caption("Paper environment only. Orders are simulated and never sent to a live brokerage account.")
 
-            has_session_credentials = bool(st.session_state.get("alpaca_credentials_path"))
-            with st.expander("Connect paper account", expanded=not has_session_credentials):
+            credentials_available = session_credentials_available()
+            with st.expander("Connect paper account", expanded=not credentials_available):
                 st.caption("Keys are kept in a temporary owner-only file for this session and are not saved to the project.")
                 with st.form("alpaca_credentials_form", clear_on_submit=False):
                     entered_api_key = st.text_input("Alpaca API key", type="password")
@@ -644,7 +681,7 @@ def live_dashboard():
                         st.session_state.alpaca_connected = False
                         st.rerun(scope="fragment")
 
-                if has_session_credentials:
+                if credentials_available:
                     if st.button("Disconnect paper account"):
                         delete_session_credentials()
                         st.session_state.alpaca_connected = False
@@ -658,10 +695,24 @@ def live_dashboard():
                 try:
                     account = paper_client.get_account()
                     st.session_state.alpaca_connected = True
+                    record_portfolio_value(account.portfolio_value)
                     account_columns = st.columns(3)
                     account_columns[0].metric("Buying power", format_money(account.buying_power))
                     account_columns[1].metric("Portfolio value", format_money(account.portfolio_value))
                     account_columns[2].metric("Account status", str(account.status))
+
+                    with st.expander("Portfolio value history", expanded=True):
+                        history = st.session_state.get("portfolio_value_history", [])
+                        st.caption("Live history collected during this Streamlit session. It resets when the session ends.")
+                        if len(history) >= 1:
+                            st.plotly_chart(
+                                make_portfolio_chart(history),
+                                use_container_width=True,
+                                config={"displaylogo": False},
+                                key="paper-portfolio-value-history",
+                            )
+                        else:
+                            st.info("Portfolio history will appear after the first account refresh.")
 
                     positions = paper_client.get_all_positions()
                     with st.expander(f"Positions · {len(positions)}", expanded=True):

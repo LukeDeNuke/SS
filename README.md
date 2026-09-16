@@ -40,6 +40,9 @@ You can also use the Connect paper account form in the Paper Trading tab. Its
 masked credentials are kept in a temporary owner-only file for the current
 Streamlit session; use Disconnect to delete that file. The temporary file is not
 part of the project and is not committed to Git.
+The Paper Trading tab also records the account portfolio value on each refresh
+and displays a live session-only value history chart. That chart resets when the
+Streamlit session ends.
 
 Alternatively, create `.streamlit/secrets.toml` with:
 
