@@ -43,6 +43,8 @@ part of the project and is not committed to Git.
 The Paper Trading tab also records the account portfolio value on each refresh
 and displays a live session-only value history chart. That chart resets when the
 Streamlit session ends.
+The Orders tab separately graphs the connected Alpaca paper account's submitted
+orders, with buy/sell markers, order value, status, and timestamp.
 
 Alternatively, create `.streamlit/secrets.toml` with:
 

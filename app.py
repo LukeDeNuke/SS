@@ -13,13 +13,16 @@ import yfinance as yf
 try:
     from alpaca.trading.client import TradingClient
     from alpaca.trading.enums import OrderSide, TimeInForce
-    from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
+    from alpaca.trading.requests import GetOrdersRequest, LimitOrderRequest, MarketOrderRequest
+    from alpaca.trading.enums import QueryOrderStatus
 except ImportError:
     TradingClient = None
     OrderSide = None
     TimeInForce = None
     LimitOrderRequest = None
     MarketOrderRequest = None
+    GetOrdersRequest = None
+    QueryOrderStatus = None
 
 from stock_scanner import FILTERS, POLL_SECONDS, WATCHLIST, apply_filters, fetch_snapshot
 
@@ -254,6 +257,49 @@ def make_portfolio_chart(history):
         showlegend=False,
     )
     return chart
+
+
+def make_orders_chart(orders):
+    order_rows = []
+    for order in orders:
+        event_time = order.filled_at or order.submitted_at or order.created_at
+        if event_time is None:
+            continue
+        quantity = float(order.filled_qty or order.qty or 0)
+        price = float(order.filled_avg_price or order.limit_price or 0)
+        order_rows.append({
+            "time": event_time,
+            "notional": quantity * price,
+            "side": str(order.side).split(".")[-1].lower(),
+            "symbol": order.symbol,
+            "status": str(order.status).split(".")[-1].lower(),
+        })
+
+    chart = go.Figure()
+    for side, color in (("buy", "#39c28f"), ("sell", "#e66b6b")):
+        side_rows = [row for row in order_rows if row["side"] == side]
+        chart.add_trace(
+            go.Scatter(
+                x=[row["time"] for row in side_rows],
+                y=[row["notional"] for row in side_rows],
+                text=[f"{row['symbol']} · {row['status']}" for row in side_rows],
+                name=side.title(),
+                mode="markers",
+                marker={"color": color, "size": 10},
+                hovertemplate="%{text}<br>$%{y:,.2f}<extra></extra>",
+            )
+        )
+    chart.update_layout(
+        height=280,
+        margin={"l": 8, "r": 8, "t": 12, "b": 8},
+        plot_bgcolor="#101820",
+        paper_bgcolor="#101820",
+        font={"color": "#d7e6ee"},
+        xaxis={"showgrid": False, "title": "Order time"},
+        yaxis={"showgrid": True, "gridcolor": "#263640", "tickprefix": "$", "title": "Order value"},
+        legend={"orientation": "h", "y": 1.08, "x": 0},
+    )
+    return chart, order_rows
 
 
 def format_volume(value):
@@ -603,8 +649,8 @@ def live_dashboard():
                 st.info("No trending ticker data is available right now.")
 
     with main_column:
-        overview_tab, charts_tab, matches_tab, paper_tab = st.tabs(
-            ["Overview", "Charts", "Matches", "Paper Trading"]
+        overview_tab, charts_tab, matches_tab, paper_tab, orders_tab = st.tabs(
+            ["Overview", "Charts", "Matches", "Paper Trading", "Orders"]
         )
 
         with overview_tab:
@@ -767,6 +813,44 @@ def live_dashboard():
                                 st.error(f"Paper order rejected: {error}")
                 except Exception as error:
                     st.error(f"Could not load Alpaca paper account: {error}")
+
+        with orders_tab:
+            st.subheader("Paper-account orders")
+            st.caption("This graph shows orders from the connected Alpaca paper account only.")
+            orders_client, orders_error = get_paper_client()
+            if orders_error:
+                st.info(orders_error)
+            else:
+                try:
+                    order_filter = GetOrdersRequest(
+                        status=QueryOrderStatus.ALL,
+                        limit=100,
+                        nested=True,
+                    )
+                    account_orders = orders_client.get_orders(filter=order_filter)
+                    if not account_orders:
+                        st.info("No paper-account orders are available yet.")
+                    else:
+                        order_chart, order_rows = make_orders_chart(account_orders)
+                        st.plotly_chart(
+                            order_chart,
+                            use_container_width=True,
+                            config={"displaylogo": False},
+                            key="paper-account-orders-chart",
+                        )
+                        order_table = pd.DataFrame([
+                            {
+                                "Time": row["time"].strftime("%Y-%m-%d %H:%M"),
+                                "Symbol": row["symbol"],
+                                "Side": row["side"].title(),
+                                "Value": format_money(row["notional"]),
+                                "Status": row["status"].title(),
+                            }
+                            for row in order_rows
+                        ])
+                        st.dataframe(order_table, use_container_width=True, hide_index=True)
+                except Exception as error:
+                    st.error(f"Could not load paper-account orders: {error}")
 
 
 live_dashboard()
