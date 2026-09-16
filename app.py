@@ -85,7 +85,7 @@ def load_snapshot():
     return fetch_snapshot(WATCHLIST)
 
 
-@st.cache_data(ttl=45, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def load_chart(symbol, period, interval):
     bars = yf.download(
         symbol,
@@ -400,8 +400,9 @@ with st.sidebar:
         charts_per_page = st.slider("Charts per page", 2, 8, 4)
         chart_type = st.radio("Chart type", ["Line", "Candlestick"], horizontal=True)
         dark_mode = st.toggle("Dark chart mode", value=True)
-        chart_period = st.selectbox("Chart range", ["1d", "5d", "1mo"], index=0)
-        chart_interval = st.selectbox("Chart timeframe", ["5m", "15m", "1h", "1d"], index=0)
+        chart_interval = st.selectbox("Chart timeframe", ["1m", "5m", "15m", "1h", "1d"], index=0)
+        chart_period_options = ["1d"] if chart_interval == "1m" else ["1d", "5d", "1mo"]
+        chart_period = st.selectbox("Chart range", chart_period_options, index=0)
 
     page_count = max(1, (len(selected_symbols) + charts_per_page - 1) // charts_per_page)
 
@@ -414,8 +415,13 @@ with st.sidebar:
             step=1,
             disabled=page_count == 1,
         )
-        refresh_seconds = st.slider("Refresh interval", 30, 300, POLL_SECONDS, step=15)
-        st.caption(f"Yahoo Finance may lag during busy periods. Updates run every {refresh_seconds}s.")
+        refresh_seconds = st.slider("Refresh interval", 15, 300, 30, step=15)
+        if st.button("Refresh now", use_container_width=True):
+            load_snapshot.clear()
+            load_chart.clear()
+            load_market_depth.clear()
+            st.rerun()
+        st.caption(f"Updates run every {refresh_seconds}s. Yahoo Finance may still be delayed.")
 
 
 @st.fragment(run_every=f"{refresh_seconds}s")
