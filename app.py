@@ -8,6 +8,7 @@ import tempfile
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 import yfinance as yf
 
 try:
@@ -185,6 +186,7 @@ def load_yahoo_market_depth(symbol):
     }
 
 
+@st.cache_data(ttl=5, show_spinner=False)
 def load_alpaca_market_depth(symbol):
     api_key, secret_key = load_session_credentials()
     api_key = api_key or os.getenv("ALPACA_API_KEY")
@@ -199,12 +201,14 @@ def load_alpaca_market_depth(symbol):
         trade = client.get_stock_latest_trade(trade_request).get(symbol)
         if quote is None:
             return None, "Alpaca returned no latest quote for this symbol."
+        bid = float(quote.bid_price) if quote.bid_price is not None else None
+        ask = float(quote.ask_price) if quote.ask_price is not None else None
         return {
             "source": "Alpaca",
             "symbol": symbol,
-            "bid": float(quote.bid_price),
+            "bid": bid,
             "bid_size": quote.bid_size,
-            "ask": float(quote.ask_price),
+            "ask": ask,
             "ask_size": quote.ask_size,
             "last": float(trade.price) if trade else None,
             "last_size": trade.size if trade else None,
@@ -585,6 +589,7 @@ with st.sidebar:
         if alpaca_credentials_available():
             chart_source_options.append("Alpaca (stocks)")
         chart_source = st.selectbox("Chart data source", chart_source_options)
+        audio_alerts = st.toggle("Audio alerts for upturns", value=False)
 
     page_count = max(1, (len(selected_symbols) + charts_per_page - 1) // charts_per_page)
 
@@ -602,6 +607,7 @@ with st.sidebar:
             load_snapshot.clear()
             load_chart.clear()
             load_yahoo_market_depth.clear()
+            load_alpaca_market_depth.clear()
             st.rerun()
         st.caption(f"Updates run every {refresh_seconds}s. Yahoo Finance may still be delayed.")
 
@@ -623,6 +629,7 @@ def live_dashboard():
     st.session_state.previous_match_symbols = match_symbols
     lead_symbol = selected_symbols[0] if selected_symbols else None
     selected = next((row for row in rows if row["symbol"] == lead_symbol), None)
+    paper_client_for_orders, _ = get_paper_client()
 
     def render_chart_grid(symbols, key_prefix):
         if not symbols:
@@ -649,6 +656,12 @@ def live_dashboard():
                             else:
                                 st.info(f"No bars are available for {symbol} from Yahoo Finance right now.")
                         else:
+                            rising_now = len(bars) >= 2 and float(bars["Close"].iloc[-1]) > float(bars["Close"].iloc[-2])
+                            trend_history = st.session_state.setdefault("chart_rising_state", {})
+                            was_rising = trend_history.get(symbol)
+                            is_chart_page = key_prefix.startswith("charts-page-")
+                            upturn_started = is_chart_page and rising_now and was_rising is False
+                            trend_history[symbol] = rising_now
                             st.plotly_chart(
                                 make_chart(bars, symbol, chart_type, dark_mode),
                                 use_container_width=True,
@@ -660,6 +673,59 @@ def live_dashboard():
                                 f"Last bar: {bars.index[-1].strftime('%H:%M')}  ·  "
                                 f"Close ${latest_bar['Close']:.2f}  ·  Updated {timestamp}"
                             )
+                            if upturn_started:
+                                st.success(f"Upturn detected: {symbol}")
+                                if audio_alerts:
+                                    components.html(
+                                        """
+                                        <script>
+                                        const context = new (window.AudioContext || window.webkitAudioContext)();
+                                        const oscillator = context.createOscillator();
+                                        const gain = context.createGain();
+                                        oscillator.frequency.value = 880;
+                                        gain.gain.setValueAtTime(0.0001, context.currentTime);
+                                        gain.gain.exponentialRampToValueAtTime(0.18, context.currentTime + 0.02);
+                                        gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.28);
+                                        oscillator.connect(gain).connect(context.destination);
+                                        oscillator.start();
+                                        oscillator.stop(context.currentTime + 0.3);
+                                        </script>
+                                        """,
+                                        height=0,
+                                    )
+
+                            if paper_client_for_orders is not None and symbol in TRADING_SYMBOLS:
+                                with st.form(f"paper-orders-{key_prefix}-{symbol}"):
+                                    order_quantity = st.number_input(
+                                        "Quantity",
+                                        min_value=0.0001,
+                                        value=1.0,
+                                        step=1.0,
+                                        key=f"chart-qty-{key_prefix}-{symbol}",
+                                    )
+                                    confirm_order = st.checkbox(
+                                        "Confirm paper order",
+                                        key=f"chart-confirm-{key_prefix}-{symbol}",
+                                    )
+                                    buy_button, sell_button = st.columns(2)
+                                    buy_order = buy_button.form_submit_button("Buy", type="primary")
+                                    sell_order = sell_button.form_submit_button("Sell")
+                                if buy_order or sell_order:
+                                    if not confirm_order:
+                                        st.warning("Confirm the paper order before submitting.")
+                                    else:
+                                        order_side = OrderSide.BUY if buy_order else OrderSide.SELL
+                                        order_request = MarketOrderRequest(
+                                            symbol=symbol,
+                                            qty=order_quantity,
+                                            side=order_side,
+                                            time_in_force=TimeInForce.DAY,
+                                        )
+                                        try:
+                                            order = paper_client_for_orders.submit_order(order_data=order_request)
+                                            st.success(f"Paper {order_side.value} order submitted: {order.id}")
+                                        except Exception as error:
+                                            st.error(f"Paper order rejected: {error}")
 
     main_column, right_column = st.columns([3.4, 1.2], gap="large")
 
@@ -682,23 +748,33 @@ def live_dashboard():
                 if depth is None:
                     st.warning(f"{depth['source'] if depth else 'Market'} quote unavailable for {depth_symbol}: {depth_error or 'no quote returned'}")
                 else:
-                    midpoint = (depth["bid"] + depth["ask"]) / 2
-                    spread = depth["ask"] - depth["bid"]
+                    midpoint = (
+                        (depth["bid"] + depth["ask"]) / 2
+                        if depth["bid"] is not None and depth["ask"] is not None
+                        else None
+                    )
+                    spread = (
+                        depth["ask"] - depth["bid"]
+                        if depth["bid"] is not None and depth["ask"] is not None
+                        else None
+                    )
                     st.caption(f"Live source: {depth['source']}")
                     quote_columns = st.columns(2)
-                    quote_columns[0].metric("Bid", f"${depth['bid']:.2f}")
-                    quote_columns[1].metric("Ask", f"${depth['ask']:.2f}")
+                    quote_columns[0].metric("Bid", f"${depth['bid']:.2f}" if depth["bid"] is not None else "--")
+                    quote_columns[1].metric("Ask", f"${depth['ask']:.2f}" if depth["ask"] is not None else "--")
                     quote_rows = [
                         {"Quote": "Bid size", "Value": depth["bid_size"] or "--"},
                         {"Quote": "Ask size", "Value": depth["ask_size"] or "--"},
-                        {"Quote": "Spread", "Value": f"${spread:.4f}"},
-                        {"Quote": "Midpoint", "Value": f"${midpoint:.2f}"},
+                        {"Quote": "Spread", "Value": f"${spread:.4f}" if spread is not None else "--"},
+                        {"Quote": "Midpoint", "Value": f"${midpoint:.2f}" if midpoint is not None else "--"},
                     ]
                     if depth.get("last") is not None:
                         quote_rows.extend([
                             {"Quote": "Last trade", "Value": f"${depth['last']:.2f}"},
-                            {"Quote": "Last size", "Value": depth.get("last_size", "--")},
+                            {"Quote": "Last size", "Value": depth.get("last_size") or "--"},
                         ])
+                    if depth.get("quote_time") is not None:
+                        quote_rows.append({"Quote": "Quote time", "Value": str(depth["quote_time"])})
                     st.dataframe(
                         pd.DataFrame(quote_rows),
                         use_container_width=True,

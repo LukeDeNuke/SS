@@ -49,6 +49,10 @@ When an Alpaca paper account is connected, the Chart display controls include an
 `Alpaca (stocks)` data source. Stock charts can then use Alpaca historical bars;
 crypto charts continue to use Yahoo Finance because this integration uses
 Alpaca's stock-data endpoint.
+The Charts page also supports optional audio alerts when a tracked stock changes
+from falling/flat to rising. Browser autoplay permissions may require interacting
+with the page first. Connected Alpaca stock charts include confirmation-gated
+paper Buy and Sell buttons below each graph.
 
 Alternatively, create `.streamlit/secrets.toml` with:
 
